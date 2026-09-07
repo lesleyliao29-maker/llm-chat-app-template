@@ -470,10 +470,11 @@ body{background:var(--paper)!important}
         <div class="case19-no">CASE 001 · OPINION COURT</div>
         <div class="case19-question" id="courtCaseQuestion"></div>
 
+        <div style="font-size:11px;letter-spacing:.12em;color:#8d857e;margin:2px 0 10px">投票结果 · 7 人必须表态</div>
         <div class="case19-score">
-          <div class="score19 yes"><b id="courtYesCount">0</b><span>赞成</span></div>
-          <div class="score19 no"><b id="courtNoCount">0</b><span>反对</span></div>
-          <div class="score19 wait"><b id="courtWaitCount">0</b><span>暂缓 / 弃权</span></div>
+          <div class="score19 yes"><b id="courtYesCount">0</b><span>A · 做 / 赞成</span></div>
+          <div class="score19 no"><b id="courtNoCount">0</b><span>B · 不做 / 反对</span></div>
+          <div class="score19 wait"><b id="courtWaitCount">7</b><span>总票数</span></div>
         </div>
 
         <div class="vote19-list" id="courtVotes"></div>
@@ -549,7 +550,7 @@ body{background:var(--paper)!important}
     <div class="profile18-card profile18-about">
       <div class="profile18-label">关于这个聊天室</div>
       <p>这是神奇女孩的实验性聊天室。不同人物代表不同的观察视角，不负责替你做人生判决。</p>
-      <div class="profile18-version">Wonderful Girl Chatroom · V20</div>
+      <div class="profile18-version">Wonderful Girl Chatroom · V21</div>
     </div>
 
     <button class="profile18-save" id="profileSaveBtn">保存设置</button>
@@ -721,6 +722,58 @@ async function streamWGChat(payload,onChunk){
   }
 }
 
+const CHAT_OUTPUT_RULE=`\n\n[聊天输出规则：这是手机聊天，不是在写文章。默认只回应当前最关键的一点，总共60到180个中文字，最多1到3个短段，每段1到3句话。除非用户明确要求“详细分析/完整拆解/展开讲”，否则不要长篇输出。不要标题、Markdown、星号、井号、项目符号、分隔线、表格、代码块。可以自然追问一句，让聊天有来有回。]`;
+
+function cleanChatText(text){
+  return String(text||'')
+    .replace(/```[a-zA-Z0-9_-]*\n?/g,'')
+    .replace(/```/g,'')
+    .replace(/^\s{0,3}#{1,6}\s*/gm,'')
+    .replace(/\*\*(.*?)\*\*/g,'$1')
+    .replace(/__(.*?)__/g,'$1')
+    .replace(/`([^`]+)`/g,'$1')
+    .replace(/^\s*[-*_]{3,}\s*$/gm,'')
+    .replace(/^\s*>\s?/gm,'')
+    .replace(/^\s*[-*•]\s+/gm,'')
+    .replace(/^\s*\d+[.)、]\s+/gm,'')
+    .replace(/[ \t]+\n/g,'\n')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+}
+
+function splitChatParagraphs(text){
+  const clean=cleanChatText(text);
+  if(!clean)return [];
+  let parts=clean.split(/\n{2,}/).map(x=>x.trim()).filter(Boolean);
+  if(parts.length===1 && clean.length>150){
+    const sentences=(clean.match(/[^。！？!?]+[。！？!?]?/g)||[clean]).map(x=>x.trim()).filter(Boolean);
+    const groups=[];
+    let current='';
+    for(const sentence of sentences){
+      if(current && (current+sentence).length>110){
+        groups.push(current);
+        current=sentence;
+      }else current+=sentence;
+    }
+    if(current)groups.push(current);
+    parts=groups;
+  }
+  if(parts.length>3)parts=[parts[0],parts[1],parts.slice(2).join('\n')];
+  return parts;
+}
+
+function finalizeAIBubbles(ai,text,container){
+  const parts=splitChatParagraphs(text);
+  if(!parts.length){ai.textContent='我刚才没接住，再说一次。';return;}
+  ai.textContent=parts[0];
+  for(let i=1;i<parts.length;i++){
+    const bubble=document.createElement('div');
+    bubble.className='msg ai';
+    bubble.textContent=parts[i];
+    container.appendChild(bubble);
+  }
+}
+
 async function sendMessage(){
   const ta=document.getElementById('input');
   const t=(ta.value||'').trim();
@@ -741,24 +794,32 @@ async function sendMessage(){
   m.scrollTop=m.scrollHeight;
 
   const historyBefore=collectChatMessages().filter((_,i,arr)=>i<arr.length-1);
-  let full='';
+  const apiMessages=historyBefore.map(x=>({...x}));
+  for(let i=apiMessages.length-1;i>=0;i--){
+    if(apiMessages[i].role==='user'){
+      apiMessages[i].content+=CHAT_OUTPUT_RULE;
+      break;
+    }
+  }
 
+  let full='';
   try{
     await streamWGChat({
       mode:'chat',
       persona:current,
-      messages:historyBefore
+      messages:apiMessages
     },chunk=>{
       full+=chunk;
-      ai.textContent=full;
+      ai.textContent=cleanChatText(full)||'正在想……';
       m.scrollTop=m.scrollHeight;
     });
-    if(!full.trim())ai.textContent='我刚才没接住，再说一次。';
+    finalizeAIBubbles(ai,full,m);
   }catch(err){
     console.error(err);
     ai.textContent='刚才连接断了一下。你再发一次，我还在。';
   }
 
+  m.scrollTop=m.scrollHeight;
   chatHistory[current]=Array.from(m.children).map(el=>el.outerHTML);
   saveCurrentConversation();
 }
@@ -937,80 +998,119 @@ function courtReset(){
 }
 
 function parseCourtSections(text){
-  const re=/【([^】]+)】\s*([\s\S]*?)(?=\n?【[^】]+】|$)/g;
+  const cleaned=cleanChatText(text);
+  const re=/【([^】｜]+?)(?:\s*｜\s*([AB]))?】\s*([\s\S]*?)(?=\n?【[^】]+】|$)/g;
   const out=[];
   let match;
-  while((match=re.exec(text))){
-    out.push({name:match[1].trim(),body:match[2].trim()});
+  while((match=re.exec(cleaned))){
+    out.push({name:match[1].trim(),vote:(match[2]||'').trim(),body:match[3].trim()});
   }
   return out;
 }
 
+function courtStrictInstruction(round=1,appeal=''){
+  const retryText='这是一个必须做选择的意见法庭。不要只讲大道理，不准弃权，不准“看情况”。';
+  const appealText=round===2?`\n用户复议理由：${appeal}\n你可以改票，也可以坚持原票，但仍然必须A或B。`:'';
+  return `${retryText}\n\n问题：${courtState.question}${appealText}\n\nA = 做 / 赞成这个动作。\nB = 不做 / 反对这个动作。\n\n七个人必须全部出席、全部投票。每个人先明确A或B，再用自己的理论给出具体理由，理由要针对这个问题，不能只说抽象大道理。每人控制在50到130个中文字。允许互相反驳。\n\n必须严格按下面顺序和格式输出，不要增加标题、Markdown或其他符号：\n【Lesley｜A或B】\n具体理由\n【弗洛伊德｜A或B】\n具体理由\n【荣格｜A或B】\n具体理由\n【阿德勒｜A或B】\n具体理由\n【海灵格｜A或B】\n具体理由\n【莱斯特｜A或B】\n具体理由\n【内维尔｜A或B】\n具体理由\n【法庭记录】\n只写一句最核心的分歧，不要代替用户决定。`;
+}
+
+function validCourtVotes(text){
+  const secs=parseCourtSections(text);
+  const ids=new Set();
+  secs.forEach(sec=>{
+    const id=courtNameToId[sec.name];
+    if(id && /^[AB]$/.test(sec.vote))ids.add(id);
+  });
+  return ids.size;
+}
+
 function renderCourtAI(text,round=1){
   courtState.lastText=text;
+  courtState.votes={};
   const list=document.getElementById('courtVotes');
   list.innerHTML='';
-
-  // 真 AI 法庭不再伪造赞成/反对票数；保留原版视觉位置，但改成“观点席”。
   const score=document.querySelector('.case19-score');
-  if(score)score.style.display='none';
+  if(score)score.style.display='grid';
 
   const sections=parseCourtSections(text);
-  const finalParts=[];
+  const byId={};
+  let finalNote='';
+  sections.forEach(sec=>{
+    if(sec.name==='法庭记录' || /法庭记录/.test(sec.name)){
+      finalNote=sec.body;
+      return;
+    }
+    const id=courtNameToId[sec.name];
+    if(id && /^[AB]$/.test(sec.vote))byId[id]=sec;
+  });
 
-  if(sections.length){
-    sections.forEach(sec=>{
-      const cleanName=sec.name.replace(/\s*·\s*法庭记录.*/,'').trim();
-      const id=courtNameToId[cleanName]||courtNameToId[sec.name]||'lesley';
-      if(/法庭记录/.test(sec.name)){
-        finalParts.push(sec.body);
-        return;
-      }
-      const p=personas[id]||{cn:sec.name,en:''};
-      const div=document.createElement('div');
-      div.className='vote19';
-      div.innerHTML=`
-        <div class="vote19-avatar">${lineAvatars[id]||''}</div>
-        <div class="vote19-name">
-          <b>${p.cn||sec.name}</b><small>${p.en||''}</small>
-          <div class="vote19-reason"></div>
-        </div>
-        <div class="vote19-badge wait">陈词</div>`;
-      div.querySelector('.vote19-reason').textContent=sec.body;
-      list.appendChild(div);
-    });
-  }else{
+  courtCharacters.forEach(id=>{
+    const p=personas[id];
+    const sec=byId[id];
+    const vote=sec?.vote||'';
+    if(vote)courtState.votes[id]=vote;
     const div=document.createElement('div');
     div.className='vote19';
-    div.innerHTML=`<div class="vote19-name"><b>意见法庭</b><div class="vote19-reason"></div></div><div class="vote19-badge wait">陈词</div>`;
-    div.querySelector('.vote19-reason').textContent=text;
+    const badgeClass=vote==='A'?'yes':vote==='B'?'no':'wait';
+    const badgeText=vote==='A'?'A · 做':vote==='B'?'B · 不做':'待补票';
+    div.innerHTML=`
+      <div class="vote19-avatar">${lineAvatars[id]||''}</div>
+      <div class="vote19-name">
+        <b>${p.cn}</b><small>${p.en}</small>
+        <div class="vote19-reason"></div>
+      </div>
+      <div class="vote19-badge ${badgeClass}">${badgeText}</div>`;
+    div.querySelector('.vote19-reason').textContent=sec?.body||'这一席没有形成有效投票，建议重新开庭。';
     list.appendChild(div);
-  }
+  });
 
-  document.getElementById('courtFinalText').textContent=
-    finalParts.join('\n\n') || (round===2?'复议完成。看看第二轮里，哪一句最让你想反驳。':'七个人已经说完。先别急着接受，看你最想反驳谁。');
+  const votes=Object.values(courtState.votes);
+  const a=votes.filter(v=>v==='A').length;
+  const b=votes.filter(v=>v==='B').length;
+  document.getElementById('courtYesCount').textContent=a;
+  document.getElementById('courtNoCount').textContent=b;
+  document.getElementById('courtWaitCount').textContent=7;
+
+  let majority='';
+  if(a>b)majority=`A 方 ${a} 票，B 方 ${b} 票。多数建议：做。`;
+  else if(b>a)majority=`A 方 ${a} 票，B 方 ${b} 票。多数建议：不做。`;
+  else majority=`A 方 ${a} 票，B 方 ${b} 票。票数打平。`;
+  if(votes.length<7)majority+=` 当前只有 ${votes.length}/7 张有效票。`;
+  document.getElementById('courtFinalText').textContent=(round===2?'复议结果：':'')+majority+(finalNote?` ${finalNote}`:'');
+}
+
+async function requestCourtText(userContent,onProgress){
+  let full='';
+  await streamWGChat({
+    mode:'court',
+    courtPersonas:courtCharacters,
+    messages:[{role:'user',content:userContent}]
+  },chunk=>{
+    full+=chunk;
+    if(onProgress)onProgress(full);
+  });
+  return full;
 }
 
 async function runCourtAI(round=1,appeal=''){
   courtState.round=round;
   const list=document.getElementById('courtVotes');
-  list.innerHTML='<div class="vote19"><div class="vote19-name"><b>开庭中……</b><div class="vote19-reason">七个人正在看同一个问题，意见可能会很不统一。</div></div><div class="vote19-badge wait">审理</div></div>';
-  document.getElementById('courtFinalText').textContent='';
+  list.innerHTML='<div class="vote19"><div class="vote19-name"><b>开庭中……</b><div class="vote19-reason">七个人必须全部表态：A 做，或者 B 不做。</div></div><div class="vote19-badge wait">审理</div></div>';
+  document.getElementById('courtFinalText').textContent='正在投票……';
+  document.getElementById('courtYesCount').textContent='0';
+  document.getElementById('courtNoCount').textContent='0';
+  document.getElementById('courtWaitCount').textContent='7';
 
-  const userContent=round===1
-    ? courtState.question
-    : `原问题：${courtState.question}\n\n用户申请复议，理由：${appeal}\n\n请重新审理。允许改变观点，也允许坚持原判断。`;
-
-  let full='';
   try{
-    await streamWGChat({
-      mode:'court',
-      courtPersonas:courtCharacters,
-      messages:[{role:'user',content:userContent}]
-    },chunk=>{
-      full+=chunk;
-      document.getElementById('courtFinalText').textContent='正在形成意见……';
+    let full=await requestCourtText(courtStrictInstruction(round,appeal),()=>{
+      document.getElementById('courtFinalText').textContent='七席正在陈词和投票……';
     });
+
+    if(validCourtVotes(full)<7){
+      document.getElementById('courtFinalText').textContent='有人没按规矩投票，正在自动补审一次……';
+      full=await requestCourtText(courtStrictInstruction(round,appeal)+'\n\n重要：上一轮有人漏票。此次必须严格给出七个【姓名｜A】或【姓名｜B】，一个都不能少。');
+    }
+
     renderCourtAI(full,round);
   }catch(err){
     console.error(err);
@@ -1018,15 +1118,14 @@ async function runCourtAI(round=1,appeal=''){
     document.getElementById('courtFinalText').textContent='';
   }
 }
-
 document.addEventListener('click',e=>{
   const ex=e.target.closest&&e.target.closest('[data-court-example]');
   if(ex){
     document.getElementById('courtQuestion').value=ex.dataset.courtExample||'';
   }
 
-  if(e.target && e.target.id==='homeCourtBtn')openCourt();
-  if(e.target && e.target.id==='bottomCourtBtn')openCourt();
+  const courtNav=e.target.closest&&e.target.closest('#homeCourtBtn,#bottomCourtBtn');
+  if(courtNav){openCourt();return;}
 
   if(e.target && e.target.id==='courtSubmitBtn'){
     const q=(document.getElementById('courtQuestion').value||'').trim();
@@ -1151,5 +1250,5 @@ function renderDiagResult(){
 function openPicker(){document.getElementById('picker').classList.add('on')}
 function closePicker(){document.getElementById('picker').classList.remove('on')}
 const g=document.getElementById('pickerGrid');Object.entries(personas).forEach(([id,p])=>g.insertAdjacentHTML('beforeend','<button class="pickbtn" onclick="closePicker();openChat(\''+id+'\')"><b>'+p.cn+' · '+p.en+'</b><small>'+p.meta+'</small></button>'));
-</script><!-- V16: syntax-fixed and interaction-validated -->
+</script><!-- V21: short-chat + clean-output + 7-seat A/B court -->
 </body></html>
